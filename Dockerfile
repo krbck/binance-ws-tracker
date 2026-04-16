@@ -12,4 +12,6 @@ COPY tracker.js ./
 RUN addgroup -S tracker && adduser -S tracker -G tracker
 USER tracker
 
+EXPOSE 3000
+
 CMD ["node", "tracker.js"]
