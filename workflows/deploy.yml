@@ -1,0 +1,58 @@
+name: Build and Update GitOps
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate Tag
+        id: tag
+        run: |
+          DATE=$(date -u +%Y%m%d)
+          TAG="${DATE}.${{ github.run_number }}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+
+      - name: Build and Push
+        run: |
+          IMAGE=ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }}
+          docker build -t $IMAGE .
+          docker push $IMAGE
+
+      - name: Checkout GitOps Repo
+        uses: actions/checkout@v4
+        with:
+          repository: krbck/gitops-config
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops-config
+
+      - name: Update Image Tag
+        run: |
+          cd gitops-config/apps/binance-ws-tracker
+          sed -i "s/tag:.*/tag: \"${{ steps.tag.outputs.tag }}\"/" values.yaml
+
+
+      - name: Commit and Push
+        run: |
+          cd gitops-config
+          git config user.name "ci-bot"
+          git config user.email "ci@local"
+          git add .
+          git commit -m "update image tag"
+          git push
