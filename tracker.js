@@ -174,6 +174,10 @@ const HEALTH_PORT = parseInt(process.env.HEALTH_PORT || '3000');
 const healthServer = http.createServer((req, res) => {
     if (req.url === '/health' && req.method === 'GET') {
         const wsConnected = ws && ws.readyState === WebSocket.OPEN;
+        res.writeHead(wsConnected ? 200 : 503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: wsConnected ? 'I am good' : 'degraded' }));
+    } else if (req.url === '/status' && req.method === 'GET') {
+        const wsConnected = ws && ws.readyState === WebSocket.OPEN;
         const status = wsConnected ? 'ok' : 'degraded';
         const code = wsConnected ? 200 : 503;
         const body = JSON.stringify({
