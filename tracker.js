@@ -287,29 +287,46 @@ const apiServer = http.createServer(async (req, res) => {
             const tradeLeverage = parseInt(leverage);
             const tradePrice = lastPrice;
 
-            // ── Pretty terminal log ───────────────────────────────────────
+            // ── Verbose terminal log ──────────────────────────────────────
+            const now = new Date();
+            const timeStr = now.toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
+            const positionSize = tradeAmount * tradeLeverage;
+            const qty = tradePrice ? positionSize / tradePrice : 0;
+            const liqDistance = tradeLeverage > 0 ? (100 / tradeLeverage) : 0;
+            const liqPrice = tradePrice
+                ? (tradeSide === 'BUY'
+                    ? tradePrice * (1 - liqDistance / 100)
+                    : tradePrice * (1 + liqDistance / 100))
+                : null;
+
             console.log('\n');
-            console.log('\x1b[1m\x1b[35m╔══════════════════════════════════════════════════════╗\x1b[0m');
-            console.log('\x1b[1m\x1b[35m║          📊  NEW TRADE ORDER RECEIVED                ║\x1b[0m');
-            console.log('\x1b[1m\x1b[35m╠══════════════════════════════════════════════════════╣\x1b[0m');
-            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mTimestamp   :\x1b[0m ${ts()}                   \x1b[35m║\x1b[0m`);
-            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mSymbol      :\x1b[0m ${tradeSymbol}-PERP                       \x1b[35m║\x1b[0m`);
-            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mSide        :\x1b[0m ${tradeSide === 'BUY' ? '\x1b[32m' : '\x1b[31m'}${tradeSide}\x1b[0m                             \x1b[35m║\x1b[0m`);
-            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mAmount (USD):\x1b[0m $${tradeAmount.toFixed(2)}                        \x1b[35m║\x1b[0m`);
-            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mLeverage    :\x1b[0m ${tradeLeverage}x                              \x1b[35m║\x1b[0m`);
-            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mEntry Price :\x1b[0m $${tradePrice ? tradePrice.toFixed(4) : 'N/A'}                      \x1b[35m║\x1b[0m`);
-            if (tradePrice && tradeAmount) {
-                const positionSize = tradeAmount * tradeLeverage;
-                const qty = positionSize / tradePrice;
-                console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mPosition Sz :\x1b[0m $${positionSize.toFixed(2)}                       \x1b[35m║\x1b[0m`);
-                console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mEst. Qty    :\x1b[0m ${qty.toFixed(4)} ${tradeSymbol}               \x1b[35m║\x1b[0m`);
+            console.log('\x1b[1m\x1b[35m╔═══════════════════════════════════════════════════════════════╗\x1b[0m');
+            console.log('\x1b[1m\x1b[35m║              📊  NEW TRADE ORDER RECEIVED                    ║\x1b[0m');
+            console.log('\x1b[1m\x1b[35m╠═══════════════════════════════════════════════════════════════╣\x1b[0m');
+            console.log('\x1b[1m\x1b[35m║\x1b[0m                                                               \x1b[35m║\x1b[0m');
+            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m⏰ Request Time     :\x1b[0m  ${timeStr}            \x1b[35m║\x1b[0m`);
+            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m👤 Telegram User    :\x1b[0m  ${username ? '@' + username : 'N/A'}                          \x1b[35m║\x1b[0m`);
+            console.log('\x1b[1m\x1b[35m║\x1b[0m                                                               \x1b[35m║\x1b[0m');
+            console.log('\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[33m─── TRADE DETAILS ─────────────────────────────────\x1b[0m   \x1b[35m║\x1b[0m');
+            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m📈 Symbol           :\x1b[0m  ${tradeSymbol}-PERP (USD-M Futures)     \x1b[35m║\x1b[0m`);
+            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m📌 Side             :\x1b[0m  ${tradeSide === 'BUY' ? '\x1b[1m\x1b[32m🟢 LONG (BUY)' : '\x1b[1m\x1b[31m🔴 SHORT (SELL)'}\x1b[0m                    \x1b[35m║\x1b[0m`);
+            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m💰 Current Price    :\x1b[0m  $${tradePrice ? tradePrice.toFixed(4) : 'N/A'}                         \x1b[35m║\x1b[0m`);
+            console.log('\x1b[1m\x1b[35m║\x1b[0m                                                               \x1b[35m║\x1b[0m');
+            console.log('\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[33m─── POSITION BREAKDOWN ────────────────────────────\x1b[0m   \x1b[35m║\x1b[0m');
+            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m💵 Margin (USD)     :\x1b[0m  $${tradeAmount.toFixed(2)}                            \x1b[35m║\x1b[0m`);
+            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m⚡ Leverage         :\x1b[0m  ${tradeLeverage}x                                \x1b[35m║\x1b[0m`);
+            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m📦 Position Size    :\x1b[0m  $${positionSize.toFixed(2)}                          \x1b[35m║\x1b[0m`);
+            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m📐 Est. Quantity    :\x1b[0m  ${qty.toFixed(4)} ${tradeSymbol}                    \x1b[35m║\x1b[0m`);
+            if (liqPrice) {
+                console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m💀 Est. Liq. Price  :\x1b[0m  \x1b[31m$${liqPrice.toFixed(4)}\x1b[0m (≈${liqDistance.toFixed(1)}% away)       \x1b[35m║\x1b[0m`);
             }
-            if (username) {
-                console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mTG User     :\x1b[0m @${username}                          \x1b[35m║\x1b[0m`);
-            }
-            console.log('\x1b[1m\x1b[35m╠══════════════════════════════════════════════════════╣\x1b[0m');
-            console.log('\x1b[1m\x1b[33m║  ⚠  STATUS: LOGGED ONLY (futures execution TODO)     ║\x1b[0m');
-            console.log('\x1b[1m\x1b[35m╚══════════════════════════════════════════════════════╝\x1b[0m');
+            console.log('\x1b[1m\x1b[35m║\x1b[0m                                                               \x1b[35m║\x1b[0m');
+            const riskLevel = tradeLeverage <= 3 ? '\x1b[32m🟢 LOW' : tradeLeverage <= 10 ? '\x1b[33m🟡 MEDIUM' : tradeLeverage <= 25 ? '\x1b[31m🔴 HIGH' : '\x1b[1m\x1b[31m⛔ EXTREME';
+            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m⚠️  Risk Level      :\x1b[0m  ${riskLevel}\x1b[0m                          \x1b[35m║\x1b[0m`);
+            console.log('\x1b[1m\x1b[35m║\x1b[0m                                                               \x1b[35m║\x1b[0m');
+            console.log('\x1b[1m\x1b[35m╠═══════════════════════════════════════════════════════════════╣\x1b[0m');
+            console.log('\x1b[1m\x1b[33m║  ⚠  STATUS: LOGGED ONLY — Futures execution not yet active   ║\x1b[0m');
+            console.log('\x1b[1m\x1b[35m╚═══════════════════════════════════════════════════════════════╝\x1b[0m');
             console.log('');
 
             jsonResponse(res, 200, {
