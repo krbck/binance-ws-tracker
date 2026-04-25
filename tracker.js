@@ -222,16 +222,45 @@ const apiServer = http.createServer(async (req, res) => {
         // ── GET /price ────────────────────────────────────────────────────────
         // n8n calls this to get the current price before sending Telegram msg
     } else if (path === '/price' && req.method === 'GET') {
-        if (lastPrice === null) {
-            jsonResponse(res, 503, { error: 'Price not available yet' });
-        } else {
+        if (lastPrice !== null) {
+            // Use live WS price
             jsonResponse(res, 200, {
                 symbol: SYMBOL.toUpperCase(),
                 price: lastPrice,
                 sessionHigh: sessionHigh === -Infinity ? null : sessionHigh,
                 sessionLow: sessionLow === Infinity ? null : sessionLow,
                 tradeCount,
+                source: 'websocket',
                 timestamp: Date.now(),
+            });
+        } else {
+            // Fallback: fetch from Binance REST API
+            const apiUrl = `https://fapi.binance.com/fapi/v1/ticker/price?symbol=${SYMBOL.toUpperCase()}`;
+            console.log(`\n\x1b[33m[PRICE]\x1b[0m WS price not available, fetching from REST API...`);
+            https.get(apiUrl, (apiRes) => {
+                let data = '';
+                apiRes.on('data', (chunk) => { data += chunk; });
+                apiRes.on('end', () => {
+                    try {
+                        const parsed = JSON.parse(data);
+                        const fallbackPrice = parseFloat(parsed.price);
+                        console.log(`\x1b[32m[PRICE]\x1b[0m REST API → ${fallbackPrice}`);
+                        jsonResponse(res, 200, {
+                            symbol: SYMBOL.toUpperCase(),
+                            price: fallbackPrice,
+                            sessionHigh: null,
+                            sessionLow: null,
+                            tradeCount: 0,
+                            source: 'rest_api',
+                            timestamp: Date.now(),
+                        });
+                    } catch (e) {
+                        jsonResponse(res, 500, { error: 'Failed to parse Binance API response' });
+                    }
+                });
+            }).on('error', (e) => {
+                console.error(`\x1b[31m[PRICE ERR]\x1b[0m REST API failed: ${e.message}`);
+                jsonResponse(res, 503, { error: `Price unavailable: ${e.message}` });
             });
         }
 
