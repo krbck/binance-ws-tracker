@@ -33,6 +33,10 @@ let reconnectTimer = null;
 let lastAlertAt = 0;
 let lastAlertDir = null;
 
+// ── Trade State (shared between n8n workflows) ───────────────────────────────
+const tradeState = {};  // keyed by chatId
+const STATE_TTL = 30 * 60 * 1000; // 30min auto-expire
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function ts() {
     return new Date().toISOString().replace('T', ' ').slice(0, 23);
@@ -168,20 +172,43 @@ console.log(`\x1b[1m  Binance USD-M Futures — ${SYMBOL.toUpperCase()} Price Tr
 console.log('\x1b[1m\x1b[35m═══════════════════════════════════════════════════\x1b[0m');
 connect();
 
-// ── Health HTTP Server ────────────────────────────────────────────────────────
-const HEALTH_PORT = parseInt(process.env.HEALTH_PORT || '3000');
+// ── HTTP API Server ───────────────────────────────────────────────────────────
+const API_PORT = parseInt(process.env.API_PORT || process.env.HEALTH_PORT || '3000');
 
-const healthServer = http.createServer((req, res) => {
-    if (req.url === '/health' && req.method === 'GET') {
+function parseBody(req) {
+    return new Promise((resolve, reject) => {
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', () => {
+            try { resolve(JSON.parse(body)); }
+            catch (e) { reject(new Error('Invalid JSON')); }
+        });
+        req.on('error', reject);
+    });
+}
+
+function jsonResponse(res, code, data) {
+    const body = JSON.stringify(data);
+    res.writeHead(code, { 'Content-Type': 'application/json' });
+    res.end(body);
+}
+
+const apiServer = http.createServer(async (req, res) => {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const path = url.pathname;
+
+    // ── GET /health ───────────────────────────────────────────────────────
+    if (path === '/health' && req.method === 'GET') {
         const wsConnected = ws && ws.readyState === WebSocket.OPEN;
-        res.writeHead(wsConnected ? 200 : 503, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: wsConnected ? 'I am good' : 'degraded' }));
-    } else if (req.url === '/status' && req.method === 'GET') {
+        jsonResponse(res, wsConnected ? 200 : 503, {
+            status: wsConnected ? 'I am good' : 'degraded',
+        });
+
+        // ── GET /status ───────────────────────────────────────────────────────
+    } else if (path === '/status' && req.method === 'GET') {
         const wsConnected = ws && ws.readyState === WebSocket.OPEN;
-        const status = wsConnected ? 'ok' : 'degraded';
-        const code = wsConnected ? 200 : 503;
-        const body = JSON.stringify({
-            status,
+        jsonResponse(res, wsConnected ? 200 : 503, {
+            status: wsConnected ? 'ok' : 'degraded',
             wsConnected,
             symbol: SYMBOL.toUpperCase(),
             lastPrice,
@@ -191,14 +218,134 @@ const healthServer = http.createServer((req, res) => {
             uptime: Math.floor(process.uptime()),
             timestamp: Date.now(),
         });
-        res.writeHead(code, { 'Content-Type': 'application/json' });
-        res.end(body);
+
+        // ── GET /price ────────────────────────────────────────────────────────
+        // n8n calls this to get the current price before sending Telegram msg
+    } else if (path === '/price' && req.method === 'GET') {
+        if (lastPrice === null) {
+            jsonResponse(res, 503, { error: 'Price not available yet' });
+        } else {
+            jsonResponse(res, 200, {
+                symbol: SYMBOL.toUpperCase(),
+                price: lastPrice,
+                sessionHigh: sessionHigh === -Infinity ? null : sessionHigh,
+                sessionLow: sessionLow === Infinity ? null : sessionLow,
+                tradeCount,
+                timestamp: Date.now(),
+            });
+        }
+
+        // ── POST /trade ───────────────────────────────────────────────────────
+        // n8n sends collected trade params here after Telegram conversation
+    } else if (path === '/trade' && req.method === 'POST') {
+        try {
+            const data = await parseBody(req);
+            const { symbol, side, amount, leverage, chatId, username } = data;
+
+            // Validate required fields
+            const missing = [];
+            if (!side) missing.push('side');
+            if (!amount) missing.push('amount');
+            if (!leverage) missing.push('leverage');
+            if (missing.length > 0) {
+                jsonResponse(res, 400, { error: `Missing fields: ${missing.join(', ')}` });
+                return;
+            }
+
+            const tradeSymbol = (symbol || SYMBOL).toUpperCase();
+            const tradeSide = side.toUpperCase();
+            const tradeAmount = parseFloat(amount);
+            const tradeLeverage = parseInt(leverage);
+            const tradePrice = lastPrice;
+
+            // ── Pretty terminal log ───────────────────────────────────────
+            console.log('\n');
+            console.log('\x1b[1m\x1b[35m╔══════════════════════════════════════════════════════╗\x1b[0m');
+            console.log('\x1b[1m\x1b[35m║          📊  NEW TRADE ORDER RECEIVED                ║\x1b[0m');
+            console.log('\x1b[1m\x1b[35m╠══════════════════════════════════════════════════════╣\x1b[0m');
+            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mTimestamp   :\x1b[0m ${ts()}                   \x1b[35m║\x1b[0m`);
+            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mSymbol      :\x1b[0m ${tradeSymbol}-PERP                       \x1b[35m║\x1b[0m`);
+            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mSide        :\x1b[0m ${tradeSide === 'BUY' ? '\x1b[32m' : '\x1b[31m'}${tradeSide}\x1b[0m                             \x1b[35m║\x1b[0m`);
+            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mAmount (USD):\x1b[0m $${tradeAmount.toFixed(2)}                        \x1b[35m║\x1b[0m`);
+            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mLeverage    :\x1b[0m ${tradeLeverage}x                              \x1b[35m║\x1b[0m`);
+            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mEntry Price :\x1b[0m $${tradePrice ? tradePrice.toFixed(4) : 'N/A'}                      \x1b[35m║\x1b[0m`);
+            if (tradePrice && tradeAmount) {
+                const positionSize = tradeAmount * tradeLeverage;
+                const qty = positionSize / tradePrice;
+                console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mPosition Sz :\x1b[0m $${positionSize.toFixed(2)}                       \x1b[35m║\x1b[0m`);
+                console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mEst. Qty    :\x1b[0m ${qty.toFixed(4)} ${tradeSymbol}               \x1b[35m║\x1b[0m`);
+            }
+            if (username) {
+                console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[36mTG User     :\x1b[0m @${username}                          \x1b[35m║\x1b[0m`);
+            }
+            console.log('\x1b[1m\x1b[35m╠══════════════════════════════════════════════════════╣\x1b[0m');
+            console.log('\x1b[1m\x1b[33m║  ⚠  STATUS: LOGGED ONLY (futures execution TODO)     ║\x1b[0m');
+            console.log('\x1b[1m\x1b[35m╚══════════════════════════════════════════════════════╝\x1b[0m');
+            console.log('');
+
+            jsonResponse(res, 200, {
+                status: 'received',
+                order: {
+                    symbol: tradeSymbol,
+                    side: tradeSide,
+                    amount: tradeAmount,
+                    leverage: tradeLeverage,
+                    entryPrice: tradePrice,
+                    positionSize: tradePrice ? tradeAmount * tradeLeverage : null,
+                    estimatedQty: tradePrice ? (tradeAmount * tradeLeverage) / tradePrice : null,
+                },
+                message: 'Trade logged to terminal. Futures execution not yet implemented.',
+            });
+
+        } catch (err) {
+            console.error(`\n\x1b[31m[TRADE ERR]\x1b[0m ${err.message}`);
+            jsonResponse(res, 400, { error: err.message });
+        }
+
+        // ── GET /state/:chatId ─────────────────────────────────────────────────
+        // n8n reads conversational state for a chat
+    } else if (path.startsWith('/state/') && req.method === 'GET') {
+        const chatId = path.split('/state/')[1];
+        const state = tradeState[chatId];
+        if (!state) {
+            jsonResponse(res, 200, { hasState: false, chatId });
+        } else if (Date.now() - state.createdAt > STATE_TTL) {
+            delete tradeState[chatId];
+            jsonResponse(res, 200, { hasState: false, chatId, reason: 'expired' });
+        } else {
+            jsonResponse(res, 200, { hasState: true, ...state });
+        }
+
+        // ── POST /state ───────────────────────────────────────────────────────
+        // n8n writes/updates conversational state
+    } else if (path === '/state' && req.method === 'POST') {
+        try {
+            const data = await parseBody(req);
+            const { chatId } = data;
+            if (!chatId) {
+                jsonResponse(res, 400, { error: 'chatId is required' });
+                return;
+            }
+            // Merge with existing state or create new
+            tradeState[chatId] = { ...(tradeState[chatId] || {}), ...data, updatedAt: Date.now() };
+            if (!tradeState[chatId].createdAt) tradeState[chatId].createdAt = Date.now();
+            console.log(`\n\x1b[36m[STATE]\x1b[0m Updated state for chat ${chatId}: step=${tradeState[chatId].step}`);
+            jsonResponse(res, 200, { status: 'ok', state: tradeState[chatId] });
+        } catch (err) {
+            jsonResponse(res, 400, { error: err.message });
+        }
+
+        // ── DELETE /state/:chatId ──────────────────────────────────────────────
+    } else if (path.startsWith('/state/') && req.method === 'DELETE') {
+        const chatId = path.split('/state/')[1];
+        delete tradeState[chatId];
+        jsonResponse(res, 200, { status: 'deleted', chatId });
+
     } else {
-        res.writeHead(404);
-        res.end('Not found');
+        jsonResponse(res, 404, { error: 'Not found' });
     }
 });
 
-healthServer.listen(HEALTH_PORT, () => {
-    console.log(`\x1b[36m[HEALTH]\x1b[0m Listening on :${HEALTH_PORT}/health`);
+apiServer.listen(API_PORT, () => {
+    console.log(`\x1b[36m[API]\x1b[0m Server listening on :${API_PORT} → /health /status /price /trade /state`);
 });
