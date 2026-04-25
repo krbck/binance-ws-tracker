@@ -348,17 +348,29 @@ const apiServer = http.createServer(async (req, res) => {
             jsonResponse(res, 400, { error: err.message });
         }
 
+        // ── GET /states (debug) ────────────────────────────────────────────────
+    } else if (path === '/states' && req.method === 'GET') {
+        const keys = Object.keys(tradeState);
+        console.log(`\n\x1b[33m[DEBUG]\x1b[0m GET /states → ${keys.length} stored states: [${keys.join(', ')}]`);
+        jsonResponse(res, 200, { count: keys.length, keys, states: tradeState });
+
         // ── GET /state/:chatId ─────────────────────────────────────────────────
         // n8n reads conversational state for a chat
     } else if (path.startsWith('/state/') && req.method === 'GET') {
         const chatId = path.split('/state/')[1];
+        const allKeys = Object.keys(tradeState);
+        console.log(`\n\x1b[33m[DEBUG]\x1b[0m GET /state → looking for chatId="${chatId}" (type: ${typeof chatId})`);
+        console.log(`\x1b[33m[DEBUG]\x1b[0m Stored keys: [${allKeys.map(k => `"${k}" (type: ${typeof k})`).join(', ')}]`);
         const state = tradeState[chatId];
         if (!state) {
+            console.log(`\x1b[31m[DEBUG]\x1b[0m NOT FOUND — no state for chatId="${chatId}"`);
             jsonResponse(res, 200, { hasState: false, chatId });
         } else if (Date.now() - state.createdAt > STATE_TTL) {
             delete tradeState[chatId];
+            console.log(`\x1b[31m[DEBUG]\x1b[0m EXPIRED — state for chatId="${chatId}" was too old`);
             jsonResponse(res, 200, { hasState: false, chatId, reason: 'expired' });
         } else {
+            console.log(`\x1b[32m[DEBUG]\x1b[0m FOUND — state for chatId="${chatId}": step=${state.step}`);
             jsonResponse(res, 200, { hasState: true, ...state });
         }
 
@@ -393,5 +405,5 @@ const apiServer = http.createServer(async (req, res) => {
 });
 
 apiServer.listen(API_PORT, () => {
-    console.log(`\x1b[36m[API]\x1b[0m Server listening on :${API_PORT} → /health /status /price /trade /state`);
+    console.log(`\x1b[36m[API]\x1b[0m Server listening on :${API_PORT} → /health /status /price /trade /state /states`);
 });
