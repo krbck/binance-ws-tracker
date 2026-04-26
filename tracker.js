@@ -187,10 +187,13 @@ function parseBody(req) {
     });
 }
 
-function jsonResponse(res, code, data) {
-    const body = JSON.stringify(data);
+function jsonResponse(res, code, data, logPath) {
+    const body = JSON.stringify(data, null, 2);
+    if (logPath) {
+        console.log(`\n\x1b[36m[API ${code}]\x1b[0m ${logPath}\n${body}`);
+    }
     res.writeHead(code, { 'Content-Type': 'application/json' });
-    res.end(body);
+    res.end(JSON.stringify(data));
 }
 
 const apiServer = http.createServer(async (req, res) => {
@@ -203,8 +206,7 @@ const apiServer = http.createServer(async (req, res) => {
         jsonResponse(res, wsConnected ? 200 : 503, {
             status: wsConnected ? 'I AM UP' : 'degraded',
             timestamp: Date.now(),
-        });
-        console.log("/health endpoint " + "\n" + jsonResponse);
+        }, '/health');
 
         // ── GET /status ───────────────────────────────────────────────────────
     } else if (path === '/status' && req.method === 'GET') {
@@ -219,9 +221,7 @@ const apiServer = http.createServer(async (req, res) => {
             sessionLow: sessionLow === Infinity ? null : sessionLow,
             uptime: Math.floor(process.uptime()),
             timestamp: Date.now(),
-
-        });
-        console.log("/status endpoint " + "\n" + jsonResponse);
+        }, '/status');
 
         // ── GET /price ────────────────────────────────────────────────────────
         // n8n calls this to get the current price before sending Telegram msg
@@ -236,8 +236,7 @@ const apiServer = http.createServer(async (req, res) => {
                 tradeCount,
                 source: 'websocket',
                 timestamp: Date.now(),
-            });
-            console.log("/price endpoint " + "\n" + jsonResponse);
+            }, '/price (ws)');
         } else {
             // Fallback: fetch from Binance REST API
             const apiUrl = `https://fapi.binance.com/fapi/v1/ticker/price?symbol=${SYMBOL.toUpperCase()}`;
@@ -258,8 +257,7 @@ const apiServer = http.createServer(async (req, res) => {
                             tradeCount: 0,
                             source: 'rest_api',
                             timestamp: Date.now(),
-                        });
-                        console.log("/price fallback endpoint " + "\n" + jsonResponse);
+                        }, '/price (rest fallback)');
                     } catch (e) {
                         jsonResponse(res, 500, { error: 'Failed to parse Binance API response' });
                     }
@@ -283,10 +281,9 @@ const apiServer = http.createServer(async (req, res) => {
             if (!amount) missing.push('amount');
             if (!leverage) missing.push('leverage');
             if (missing.length > 0) {
-                jsonResponse(res, 400, { error: `Missing fields: ${missing.join(', ')}` });
+                jsonResponse(res, 400, { error: `Missing fields: ${missing.join(', ')}` }, '/trade (validation)');
                 return;
             }
-            console.log("/trade endpoint " + "\n" + jsonResponse);
 
             const tradeSymbol = (symbol || SYMBOL).toUpperCase();
             const tradeSide = side.toUpperCase();
@@ -348,8 +345,7 @@ const apiServer = http.createServer(async (req, res) => {
                     estimatedQty: tradePrice ? (tradeAmount * tradeLeverage) / tradePrice : null,
                 },
                 message: 'Trade logged to terminal. Futures execution not yet implemented.',
-            });
-            console.log("/trade endpoint " + "\n" + jsonResponse);
+            }, '/trade');
 
         } catch (err) {
             console.error(`\n\x1b[31m[TRADE ERR]\x1b[0m ${err.message}`);
@@ -362,12 +358,12 @@ const apiServer = http.createServer(async (req, res) => {
         const chatId = path.split('/state/')[1];
         const state = tradeState[chatId];
         if (!state) {
-            jsonResponse(res, 200, { hasState: false, chatId });
+            jsonResponse(res, 200, { hasState: false, chatId }, '/state GET (not found)');
         } else if (Date.now() - state.createdAt > STATE_TTL) {
             delete tradeState[chatId];
-            jsonResponse(res, 200, { hasState: false, chatId, reason: 'expired' });
+            jsonResponse(res, 200, { hasState: false, chatId, reason: 'expired' }, '/state GET (expired)');
         } else {
-            jsonResponse(res, 200, { hasState: true, ...state });
+            jsonResponse(res, 200, { hasState: true, ...state }, '/state GET (found)');
         }
 
         // ── POST /state ───────────────────────────────────────────────────────
@@ -384,22 +380,20 @@ const apiServer = http.createServer(async (req, res) => {
             tradeState[chatId] = { ...(tradeState[chatId] || {}), ...data, updatedAt: Date.now() };
             if (!tradeState[chatId].createdAt) tradeState[chatId].createdAt = Date.now();
             console.log(`\n\x1b[36m[STATE]\x1b[0m Updated state for chat ${chatId}: step=${tradeState[chatId].step}`);
-            jsonResponse(res, 200, { status: 'ok', state: tradeState[chatId] });
+            jsonResponse(res, 200, { status: 'ok', state: tradeState[chatId] }, '/state POST');
         } catch (err) {
-            jsonResponse(res, 400, { error: err.message });
+            jsonResponse(res, 400, { error: err.message }, '/state POST (error)');
         }
-        console.log("/state n8n write update endpoint " + "\n" + jsonResponse);
 
         // ── DELETE /state/:chatId ──────────────────────────────────────────────
     } else if (path.startsWith('/state/') && req.method === 'DELETE') {
         const chatId = path.split('/state/')[1];
         delete tradeState[chatId];
-        jsonResponse(res, 200, { status: 'deleted', chatId });
+        jsonResponse(res, 200, { status: 'deleted', chatId }, '/state DELETE');
 
     } else {
-        jsonResponse(res, 404, { error: 'Not found' });
+        jsonResponse(res, 404, { error: 'Not found' }, path);
     }
-    console.log("/state delete endpoint " + "\n" + jsonResponse);
 });
 
 apiServer.listen(API_PORT, () => {
