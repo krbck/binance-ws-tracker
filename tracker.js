@@ -409,8 +409,8 @@ const apiServer = http.createServer(async (req, res) => {
                 return;
             }
 
-            const tradeSymbol = (symbol || SYMBOL).toUpperCase();
-            const tradeSide = side.toUpperCase();
+            const tradeSymbol = (symbol || SYMBOL).toUpperCase().replace(/^=/, '');
+            const tradeSide = side.toUpperCase().replace(/^=/, '');
             const tradeAmount = parseFloat(amount);
             const tradeLeverage = parseInt(leverage);
             let tradePrice = lastPrice;
@@ -419,10 +419,15 @@ const apiServer = http.createServer(async (req, res) => {
             let positionSize = tradeAmount * tradeLeverage;
             let finalQty = tradePrice ? positionSize / tradePrice : 0;
             let executedOrder = null;
-            let executionMsg = 'LOGGED ONLY — No API Keys configured';
+            let executionMsg = '';
             let executionColor = '\x1b[33m';
 
-            if (BINANCE_API_KEY && BINANCE_API_SECRET && tradePrice) {
+            if (!BINANCE_API_KEY || !BINANCE_API_SECRET) {
+                executionMsg = 'LOGGED ONLY — No API Keys configured in .env';
+            } else if (!tradePrice) {
+                executionMsg = 'EXECUTION FAILED — Waiting for live price from WebSocket';
+                executionColor = '\x1b[31m';
+            } else {
                 try {
                     await binancePrivateRequest('POST', 'leverage', { symbol: tradeSymbol, leverage: tradeLeverage });
                     const qPrec = symbolInfo.quantityPrecision !== undefined ? symbolInfo.quantityPrecision : 3;
