@@ -147,7 +147,7 @@ function getPositionText(currentPrice) {
 
 ${icon} <b>PnL: ${sign}${pnlUsdt.toFixed(2)} USDT (${sign}${levPct.toFixed(2)}%)</b>
 
-<i>Updates automatically...</i>`;
+<i>Last updated at ${new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' })}</i>`;
 }
 
 setInterval(async () => {
@@ -161,7 +161,7 @@ setInterval(async () => {
             activePosition.lastTgText = text;
         }
     }
-}, 3000);
+}, 10000);
 
 // ── Auto-clear position if closed on Binance ─────────────────────────────────
 setInterval(async () => {
