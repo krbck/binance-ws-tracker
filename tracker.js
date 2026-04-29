@@ -24,9 +24,9 @@ const RECONNECT_MS = 3000;
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || null;
 const ALERT_THRESHOLD = parseFloat(process.env.ALERT_THRESHOLD || '0.5');
 const ALERT_COOLDOWN = parseInt(process.env.ALERT_COOLDOWN || '60000');
-const BINANCE_API_KEY = process.env.BINANCE_API_KEY || null;
-const BINANCE_API_SECRET = process.env.BINANCE_API_SECRET || null;
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || null;
+const BINANCE_API_KEY = (process.env.BINANCE_API_KEY || '').trim() || null;
+const BINANCE_API_SECRET = (process.env.BINANCE_API_SECRET || '').trim() || null;
+const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || '').trim() || null;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let lastPrice = null;
@@ -105,9 +105,23 @@ async function tgRequest(method, payload) {
         };
         const req = https.request(options, res => {
             let data = ''; res.on('data', d => data += d);
-            res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { resolve(null); } });
+            res.on('end', () => { 
+                try { 
+                    const parsed = JSON.parse(data); 
+                    if (!parsed.ok) {
+                        console.log(`\n\x1b[31m[TELEGRAM ERR]\x1b[0m ${parsed.description}`);
+                    } else {
+                        console.log(`\n\x1b[36m[TELEGRAM]\x1b[0m Successfully sent ${method}`);
+                    }
+                    resolve(parsed);
+                } catch(e) { resolve(null); } 
+            });
         });
-        req.on('error', reject); req.write(body); req.end();
+        req.on('error', e => {
+            console.log(`\n\x1b[31m[TELEGRAM NETWORK ERR]\x1b[0m ${e.message}`);
+            reject(e);
+        }); 
+        req.write(body); req.end();
     });
 }
 
@@ -179,9 +193,14 @@ function printTick(price, qty, isBuyerMaker) {
         pnlStr = ` | ${color}PnL: ${pnlUsdt > 0 ? '+' : ''}${pnlUsdt.toFixed(2)}$ (${levPct > 0 ? '+' : ''}${levPct.toFixed(2)}%)\x1b[0m`;
     }
 
-    process.stdout.write(
-        `\r[${ts()}] ${SYMBOL.toUpperCase()}-PERP | ${side} | Price: ${pStr} | Qty: ${parseFloat(qty).toFixed(2)} | ${hStr} ${lStr} | ${cStr}${pnlStr}   `
-    );
+    const logStr = `[${ts()}] ${SYMBOL.toUpperCase()}-PERP | ${side} | Price: ${pStr} | Qty: ${parseFloat(qty).toFixed(2)} | ${hStr} ${lStr} | ${cStr}${pnlStr}`;
+    
+    if (process.env.KUBERNETES_SERVICE_HOST) {
+        // In Kubernetes, print newline so logs don't get swallowed
+        console.log(logStr);
+    } else {
+        process.stdout.write(`\r${logStr}   `);
+    }
 }
 
 // ── n8n Webhook POST ──────────────────────────────────────────────────────────
