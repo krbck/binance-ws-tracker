@@ -26,7 +26,7 @@ const ALERT_THRESHOLD = parseFloat(process.env.ALERT_THRESHOLD || '0.5');
 const ALERT_COOLDOWN = parseInt(process.env.ALERT_COOLDOWN || '60000');
 const BINANCE_API_KEY = (process.env.BINANCE_API_KEY || '').trim() || null;
 const BINANCE_API_SECRET = (process.env.BINANCE_API_SECRET || '').trim() || null;
-const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || '').trim() || null;
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || null;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let lastPrice = null;
@@ -105,22 +105,22 @@ async function tgRequest(method, payload) {
         };
         const req = https.request(options, res => {
             let data = ''; res.on('data', d => data += d);
-            res.on('end', () => { 
-                try { 
-                    const parsed = JSON.parse(data); 
+            res.on('end', () => {
+                try {
+                    const parsed = JSON.parse(data);
                     if (!parsed.ok) {
                         console.log(`\n\x1b[31m[TELEGRAM ERR]\x1b[0m ${parsed.description}`);
                     } else {
                         console.log(`\n\x1b[36m[TELEGRAM]\x1b[0m Successfully sent ${method}`);
                     }
                     resolve(parsed);
-                } catch(e) { resolve(null); } 
+                } catch (e) { resolve(null); }
             });
         });
         req.on('error', e => {
             console.log(`\n\x1b[31m[TELEGRAM NETWORK ERR]\x1b[0m ${e.message}`);
             reject(e);
-        }); 
+        });
         req.write(body); req.end();
     });
 }
@@ -194,7 +194,7 @@ function printTick(price, qty, isBuyerMaker) {
     }
 
     const logStr = `[${ts()}] ${SYMBOL.toUpperCase()}-PERP | ${side} | Price: ${pStr} | Qty: ${parseFloat(qty).toFixed(2)} | ${hStr} ${lStr} | ${cStr}${pnlStr}`;
-    
+
     if (process.env.KUBERNETES_SERVICE_HOST) {
         // In Kubernetes, print newline so logs don't get swallowed
         console.log(logStr);
@@ -432,8 +432,8 @@ const apiServer = http.createServer(async (req, res) => {
             const tradeSide = side.toUpperCase().replace(/^=/, '');
             const tradeAmount = parseFloat(amount);
             const tradeLeverage = parseInt(leverage);
-            // Clean up chatId just in case n8n passed an '=' sign
-            const cleanChatId = chatId ? String(chatId).replace(/^=/, '') : null;
+            // Let's hardcode it just for ONE test to prove what n8n is sending!
+            const cleanChatId = '5233868897';
             let tradePrice = lastPrice;
 
             // ── Execute on Binance ──────────────────────────────────────
