@@ -26,7 +26,7 @@ const ALERT_THRESHOLD = parseFloat(process.env.ALERT_THRESHOLD || '0.5');
 const ALERT_COOLDOWN = parseInt(process.env.ALERT_COOLDOWN || '60000');
 const BINANCE_API_KEY = (process.env.BINANCE_API_KEY || '').trim() || null;
 const BINANCE_API_SECRET = (process.env.BINANCE_API_SECRET || '').trim() || null;
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || null;
+const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || '').trim() || null;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let lastPrice = null;
@@ -432,8 +432,7 @@ const apiServer = http.createServer(async (req, res) => {
             const tradeSide = side.toUpperCase().replace(/^=/, '');
             const tradeAmount = parseFloat(amount);
             const tradeLeverage = parseInt(leverage);
-            // Let's hardcode it just for ONE test to prove what n8n is sending!
-            const cleanChatId = '5233868897';
+            const cleanChatId = chatId ? String(chatId).replace(/^=/, '') : null;
             let tradePrice = lastPrice;
 
             // ── Execute on Binance ──────────────────────────────────────
