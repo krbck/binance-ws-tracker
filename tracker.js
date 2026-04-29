@@ -19,7 +19,7 @@ const crypto = require('crypto');
 // ── Config ────────────────────────────────────────────────────────────────────
 const SYMBOL = (process.env.SYMBOL || 'solusdt').toLowerCase();
 const STREAM = `${SYMBOL}@aggTrade`;
-const WS_URL = `wss://fstream.binance.com/ws/${STREAM}`;
+const WS_URL = `wss://fstream.binancefuture.com/ws/${STREAM}`;
 const RECONNECT_MS = 3000;
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || null;
 const ALERT_THRESHOLD = parseFloat(process.env.ALERT_THRESHOLD || '0.5');
