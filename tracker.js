@@ -9,9 +9,12 @@
  *   ALERT_COOLDOWN   — aynı yönde tekrar alert için bekleme ms (default: 60000)
  */
 
+require('dotenv').config();
+
 const WebSocket = require('ws');
 const https = require('https');
 const http = require('http');
+const crypto = require('crypto');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const SYMBOL = (process.env.SYMBOL || 'solusdt').toLowerCase();
@@ -21,6 +24,9 @@ const RECONNECT_MS = 3000;
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || null;
 const ALERT_THRESHOLD = parseFloat(process.env.ALERT_THRESHOLD || '0.5');
 const ALERT_COOLDOWN = parseInt(process.env.ALERT_COOLDOWN || '60000');
+const BINANCE_API_KEY = process.env.BINANCE_API_KEY || null;
+const BINANCE_API_SECRET = process.env.BINANCE_API_SECRET || null;
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || null;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let lastPrice = null;
@@ -32,10 +38,116 @@ let ws = null;
 let reconnectTimer = null;
 let lastAlertAt = 0;
 let lastAlertDir = null;
+let activePosition = null;
+let symbolInfo = {};
 
 // ── Trade State (shared between n8n workflows) ───────────────────────────────
 const tradeState = {};  // keyed by chatId
 const STATE_TTL = 30 * 60 * 1000; // 30min auto-expire
+
+// ── Binance API ───────────────────────────────────────────────────────────────
+async function binancePrivateRequest(method, endpoint, params = {}) {
+    if (!BINANCE_API_KEY || !BINANCE_API_SECRET) throw new Error("Missing Binance API Key or Secret");
+    const timestamp = Date.now();
+    const query = new URLSearchParams({ ...params, timestamp, recvWindow: 5000 }).toString();
+    const signature = crypto.createHmac('sha256', BINANCE_API_SECRET).update(query).digest('hex');
+    const fullQuery = `${query}&signature=${signature}`;
+
+    return new Promise((resolve, reject) => {
+        const options = {
+            hostname: 'fapi.binance.com', port: 443, path: `/fapi/v1/${endpoint}?${fullQuery}`,
+            method: method,
+            headers: { 'X-MBX-APIKEY': BINANCE_API_KEY, 'Content-Type': 'application/x-www-form-urlencoded' }
+        };
+        const req = https.request(options, res => {
+            let data = '';
+            res.on('data', d => data += d);
+            res.on('end', () => {
+                try {
+                    const parsed = JSON.parse(data);
+                    if (res.statusCode >= 400) reject(new Error(parsed.msg || JSON.stringify(parsed)));
+                    else resolve(parsed);
+                } catch (e) { reject(e); }
+            });
+        });
+        req.on('error', reject);
+        if (method !== 'GET') req.setHeader('Content-Length', 0);
+        req.end();
+    });
+}
+
+function loadExchangeInfo() {
+    https.get('https://fapi.binance.com/fapi/v1/exchangeInfo', (res) => {
+        let data = ''; res.on('data', d => data += d);
+        res.on('end', () => {
+            try {
+                const parsed = JSON.parse(data);
+                const sInfo = parsed.symbols.find(s => s.symbol === SYMBOL.toUpperCase());
+                if (sInfo) {
+                    symbolInfo = sInfo;
+                    console.log(`\n\x1b[36m[INFO]\x1b[0m Loaded precision for ${SYMBOL.toUpperCase()}: qty=${sInfo.quantityPrecision}`);
+                }
+            } catch (e) { }
+        });
+    }).on('error', () => { });
+}
+loadExchangeInfo();
+
+// ── Telegram API ──────────────────────────────────────────────────────────────
+async function tgRequest(method, payload) {
+    if (!TELEGRAM_BOT_TOKEN) return null;
+    return new Promise((resolve, reject) => {
+        const body = JSON.stringify(payload);
+        const options = {
+            hostname: 'api.telegram.org', port: 443, path: `/bot${TELEGRAM_BOT_TOKEN}/${method}`,
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+        };
+        const req = https.request(options, res => {
+            let data = ''; res.on('data', d => data += d);
+            res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { resolve(null); } });
+        });
+        req.on('error', reject); req.write(body); req.end();
+    });
+}
+
+function getPositionText(currentPrice) {
+    if (!activePosition) return '';
+    const cp = currentPrice || lastPrice;
+    if (!cp) return 'Waiting for price...';
+
+    const priceDiff = cp - activePosition.entryPrice;
+    const dirMult = activePosition.side === 'BUY' ? 1 : -1;
+    const rawPct = (priceDiff / activePosition.entryPrice) * 100 * dirMult;
+    const levPct = rawPct * activePosition.leverage;
+    const pnlUsdt = (levPct / 100) * activePosition.amount;
+
+    const icon = pnlUsdt >= 0 ? '🟢' : '🔴';
+    const sign = pnlUsdt >= 0 ? '+' : '';
+
+    return `📊 <b>Active ${activePosition.side} Position</b>
+🔹 Symbol: ${activePosition.symbol}
+🔹 Leverage: ${activePosition.leverage}x
+🔹 Entry: $${activePosition.entryPrice.toFixed(4)}
+🔹 Current: $${cp.toFixed(4)}
+
+${icon} <b>PnL: ${sign}${pnlUsdt.toFixed(2)} USDT (${sign}${levPct.toFixed(2)}%)</b>
+
+<i>Updates automatically...</i>`;
+}
+
+setInterval(async () => {
+    if (activePosition && activePosition.messageId && activePosition.chatId && TELEGRAM_BOT_TOKEN) {
+        const text = getPositionText();
+        if (text !== activePosition.lastTgText) {
+            await tgRequest('editMessageText', {
+                chat_id: activePosition.chatId, message_id: activePosition.messageId,
+                text: text, parse_mode: 'HTML'
+            });
+            activePosition.lastTgText = text;
+        }
+    }
+}, 3000);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function ts() {
@@ -55,8 +167,20 @@ function printTick(price, qty, isBuyerMaker) {
     const hStr = `\x1b[90mH: ${sessionHigh.toFixed(4)}\x1b[0m`;
     const lStr = `\x1b[90mL: ${sessionLow.toFixed(4)}\x1b[0m`;
     const cStr = `\x1b[90m#${tradeCount}\x1b[0m`;
+
+    let pnlStr = '';
+    if (activePosition && activePosition.entryPrice) {
+        const priceDiff = price - activePosition.entryPrice;
+        const dirMult = activePosition.side === 'BUY' ? 1 : -1;
+        const rawPct = (priceDiff / activePosition.entryPrice) * 100 * dirMult;
+        const levPct = rawPct * activePosition.leverage;
+        const pnlUsdt = (levPct / 100) * activePosition.amount;
+        const color = pnlUsdt >= 0 ? '\x1b[32m' : '\x1b[31m';
+        pnlStr = ` | ${color}PnL: ${pnlUsdt > 0 ? '+' : ''}${pnlUsdt.toFixed(2)}$ (${levPct > 0 ? '+' : ''}${levPct.toFixed(2)}%)\x1b[0m`;
+    }
+
     process.stdout.write(
-        `\r[${ts()}] ${SYMBOL.toUpperCase()}-PERP | ${side} | Price: ${pStr} | Qty: ${parseFloat(qty).toFixed(2)} | ${hStr} ${lStr} | ${cStr}   `
+        `\r[${ts()}] ${SYMBOL.toUpperCase()}-PERP | ${side} | Price: ${pStr} | Qty: ${parseFloat(qty).toFixed(2)} | ${hStr} ${lStr} | ${cStr}${pnlStr}   `
     );
 }
 
@@ -206,7 +330,7 @@ const apiServer = http.createServer(async (req, res) => {
         jsonResponse(res, wsConnected ? 200 : 503, {
             status: wsConnected ? 'I AM UP' : 'degraded',
             timestamp: Date.now(),
-        }, '/health');
+        }, null); // 'null' silences logging for health check
 
         // ── GET /status ───────────────────────────────────────────────────────
     } else if (path === '/status' && req.method === 'GET') {
@@ -221,7 +345,7 @@ const apiServer = http.createServer(async (req, res) => {
             sessionLow: sessionLow === Infinity ? null : sessionLow,
             uptime: Math.floor(process.uptime()),
             timestamp: Date.now(),
-        }, '/status');
+        }, '/status'); // 'null' silences logging for status check
 
         // ── GET /price ────────────────────────────────────────────────────────
         // n8n calls this to get the current price before sending Telegram msg
@@ -289,13 +413,53 @@ const apiServer = http.createServer(async (req, res) => {
             const tradeSide = side.toUpperCase();
             const tradeAmount = parseFloat(amount);
             const tradeLeverage = parseInt(leverage);
-            const tradePrice = lastPrice;
+            let tradePrice = lastPrice;
+
+            // ── Execute on Binance ──────────────────────────────────────
+            let positionSize = tradeAmount * tradeLeverage;
+            let finalQty = tradePrice ? positionSize / tradePrice : 0;
+            let executedOrder = null;
+            let executionMsg = 'LOGGED ONLY — No API Keys configured';
+            let executionColor = '\x1b[33m';
+
+            if (BINANCE_API_KEY && BINANCE_API_SECRET && tradePrice) {
+                try {
+                    await binancePrivateRequest('POST', 'leverage', { symbol: tradeSymbol, leverage: tradeLeverage });
+                    const qPrec = symbolInfo.quantityPrecision !== undefined ? symbolInfo.quantityPrecision : 3;
+                    finalQty = parseFloat(finalQty.toFixed(qPrec));
+
+                    executedOrder = await binancePrivateRequest('POST', 'order', {
+                        symbol: tradeSymbol, side: tradeSide, type: 'MARKET', quantity: finalQty
+                    });
+
+                    if (executedOrder && executedOrder.avgPrice && parseFloat(executedOrder.avgPrice) > 0) {
+                        tradePrice = parseFloat(executedOrder.avgPrice);
+                    }
+                    executionMsg = 'SUCCESSFULLY EXECUTED ON BINANCE';
+                    executionColor = '\x1b[32m';
+
+                    activePosition = {
+                        symbol: tradeSymbol, side: tradeSide, entryPrice: tradePrice,
+                        leverage: tradeLeverage, amount: tradeAmount, qty: finalQty,
+                        chatId: chatId, messageId: null, lastTgText: ''
+                    };
+
+                    if (TELEGRAM_BOT_TOKEN && chatId) {
+                        const tgRes = await tgRequest('sendMessage', {
+                            chat_id: chatId, text: getPositionText(tradePrice), parse_mode: 'HTML'
+                        });
+                        if (tgRes && tgRes.ok) activePosition.messageId = tgRes.result.message_id;
+                    }
+                } catch (e) {
+                    executionMsg = `EXECUTION FAILED: ${e.message}`;
+                    executionColor = '\x1b[31m';
+                }
+            }
 
             // ── Verbose terminal log ──────────────────────────────────────
             const now = new Date();
             const timeStr = now.toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
-            const positionSize = tradeAmount * tradeLeverage;
-            const qty = tradePrice ? positionSize / tradePrice : 0;
+            positionSize = tradeAmount * tradeLeverage; // re-calculate if necessary
             const liqDistance = tradeLeverage > 0 ? (100 / tradeLeverage) : 0;
             const liqPrice = tradePrice
                 ? (tradeSide === 'BUY'
@@ -320,7 +484,7 @@ const apiServer = http.createServer(async (req, res) => {
             console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m💵 Margin (USD)     :\x1b[0m  $${tradeAmount.toFixed(2)}                            \x1b[35m║\x1b[0m`);
             console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m⚡ Leverage         :\x1b[0m  ${tradeLeverage}x                                \x1b[35m║\x1b[0m`);
             console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m📦 Position Size    :\x1b[0m  $${positionSize.toFixed(2)}                          \x1b[35m║\x1b[0m`);
-            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m📐 Est. Quantity    :\x1b[0m  ${qty.toFixed(4)} ${tradeSymbol}                    \x1b[35m║\x1b[0m`);
+            console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m📐 Final Quantity   :\x1b[0m  ${finalQty.toFixed(4)} ${tradeSymbol}                    \x1b[35m║\x1b[0m`);
             if (liqPrice) {
                 console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m💀 Est. Liq. Price  :\x1b[0m  \x1b[31m$${liqPrice.toFixed(4)}\x1b[0m (≈${liqDistance.toFixed(1)}% away)       \x1b[35m║\x1b[0m`);
             }
@@ -329,7 +493,8 @@ const apiServer = http.createServer(async (req, res) => {
             console.log(`\x1b[1m\x1b[35m║\x1b[0m  \x1b[1m\x1b[36m⚠️  Risk Level      :\x1b[0m  ${riskLevel}\x1b[0m                          \x1b[35m║\x1b[0m`);
             console.log('\x1b[1m\x1b[35m║\x1b[0m                                                               \x1b[35m║\x1b[0m');
             console.log('\x1b[1m\x1b[35m╠═══════════════════════════════════════════════════════════════╣\x1b[0m');
-            console.log('\x1b[1m\x1b[33m║  ⚠  STATUS: LOGGED ONLY — Futures execution not yet active   ║\x1b[0m');
+            const msgPadded = executionMsg.padEnd(54, ' ');
+            console.log(`\x1b[1m${executionColor}║  ⚠  STATUS: ${msgPadded} ║\x1b[0m`);
             console.log('\x1b[1m\x1b[35m╚═══════════════════════════════════════════════════════════════╝\x1b[0m');
             console.log('');
 
@@ -342,9 +507,9 @@ const apiServer = http.createServer(async (req, res) => {
                     leverage: tradeLeverage,
                     entryPrice: tradePrice,
                     positionSize: tradePrice ? tradeAmount * tradeLeverage : null,
-                    estimatedQty: tradePrice ? (tradeAmount * tradeLeverage) / tradePrice : null,
+                    finalQty: finalQty,
                 },
-                message: 'Trade logged to terminal. Futures execution not yet implemented.',
+                message: executionMsg,
             }, '/trade');
 
         } catch (err) {
