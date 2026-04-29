@@ -163,6 +163,24 @@ setInterval(async () => {
     }
 }, 3000);
 
+// ── Auto-clear position if closed on Binance ─────────────────────────────────
+setInterval(async () => {
+    if (!activePosition || !BINANCE_API_KEY || !BINANCE_API_SECRET) return;
+    try {
+        const positions = await binancePrivateRequest('GET', 'positionRisk', {
+            symbol: activePosition.symbol
+        });
+        const pos = Array.isArray(positions) ? positions.find(p => p.symbol === activePosition.symbol) : null;
+        const posAmt = pos ? parseFloat(pos.positionAmt) : 0;
+        if (posAmt === 0) {
+            console.log(`\n\x1b[33m[POSITION]\x1b[0m No open position on Binance for ${activePosition.symbol} — clearing tracker`);
+            activePosition = null;
+        }
+    } catch (e) {
+        // Silently ignore — will retry next interval
+    }
+}, 10000);
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function ts() {
     return new Date().toISOString().replace('T', ' ').slice(0, 23);
@@ -435,7 +453,7 @@ const apiServer = http.createServer(async (req, res) => {
             const cleanChatId = chatId ? String(chatId).replace(/^=/, '').trim() : null;
             let tradePrice = lastPrice;
 
-            console.log(`\x1b[36m[DEBUG]\x1b[0m Raw chatId from n8n: "${chatId}" → cleaned: "${cleanChatId}"`);
+            console.log(`${chatId}`);
 
             // ── Execute on Binance ──────────────────────────────────────
             let positionSize = tradeAmount * tradeLeverage;
