@@ -432,6 +432,8 @@ const apiServer = http.createServer(async (req, res) => {
             const tradeSide = side.toUpperCase().replace(/^=/, '');
             const tradeAmount = parseFloat(amount);
             const tradeLeverage = parseInt(leverage);
+            // Clean up chatId just in case n8n passed an '=' sign
+            const cleanChatId = chatId ? String(chatId).replace(/^=/, '') : null;
             let tradePrice = lastPrice;
 
             // ── Execute on Binance ──────────────────────────────────────
