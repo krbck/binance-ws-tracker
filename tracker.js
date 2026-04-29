@@ -432,8 +432,10 @@ const apiServer = http.createServer(async (req, res) => {
             const tradeSide = side.toUpperCase().replace(/^=/, '');
             const tradeAmount = parseFloat(amount);
             const tradeLeverage = parseInt(leverage);
-            const cleanChatId = chatId ? String(chatId).replace(/^=/, '') : null;
+            const cleanChatId = chatId ? String(chatId).replace(/^=/, '').trim() : null;
             let tradePrice = lastPrice;
+
+            console.log(`\x1b[36m[DEBUG]\x1b[0m Raw chatId from n8n: "${chatId}" → cleaned: "${cleanChatId}"`);
 
             // ── Execute on Binance ──────────────────────────────────────
             let positionSize = tradeAmount * tradeLeverage;
@@ -466,12 +468,12 @@ const apiServer = http.createServer(async (req, res) => {
                     activePosition = {
                         symbol: tradeSymbol, side: tradeSide, entryPrice: tradePrice,
                         leverage: tradeLeverage, amount: tradeAmount, qty: finalQty,
-                        chatId: chatId, messageId: null, lastTgText: ''
+                        chatId: cleanChatId, messageId: null, lastTgText: ''
                     };
 
-                    if (TELEGRAM_BOT_TOKEN && chatId) {
+                    if (TELEGRAM_BOT_TOKEN && cleanChatId) {
                         const tgRes = await tgRequest('sendMessage', {
-                            chat_id: chatId, text: getPositionText(tradePrice), parse_mode: 'HTML'
+                            chat_id: cleanChatId, text: getPositionText(tradePrice), parse_mode: 'HTML'
                         });
                         if (tgRes && tgRes.ok) activePosition.messageId = tgRes.result.message_id;
                     }
