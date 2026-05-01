@@ -133,7 +133,8 @@ function getDashboardText(chatId, currentPrice) {
     if (chatPositions.length === 0) return 'No active positions.';
     if (!cp) return 'Waiting for price...';
 
-    let text = `📊 <b>Active Positions Dashboard</b>\n\n`;
+    let text = `📊 <b>Active Positions Dashboard</b>\n`;
+    text += `💰 <b>Current Price:</b> $${cp.toFixed(4)}\n\n`;
     let totalPnl = 0;
     
     chatPositions.forEach((pos, index) => {
@@ -147,9 +148,9 @@ function getDashboardText(chatId, currentPrice) {
         const icon = pnlUsdt >= 0 ? '🟢' : '🔴';
         const sign = pnlUsdt >= 0 ? '+' : '';
 
-        text += `<b>${index + 1}. ${pos.side} ${pos.symbol}</b> | ${pos.leverage}x
-🔹 Entry: $${pos.entryPrice.toFixed(4)} | Cur: $${cp.toFixed(4)}
-${icon} PnL: ${sign}${pnlUsdt.toFixed(2)} USDT (${sign}${levPct.toFixed(2)}%)\n\n`;
+        text += `<b>${index + 1}. ${pos.side} ${pos.symbol}</b> | ${pos.leverage}x | 💵 Margin: $${pos.amount.toFixed(2)}\n`;
+        text += `🔹 Entry: $${pos.entryPrice.toFixed(4)}\n`;
+        text += `${icon} PnL: ${sign}${pnlUsdt.toFixed(2)} USDT (${sign}${levPct.toFixed(2)}%)\n\n`;
     });
     
     const totalIcon = totalPnl >= 0 ? '🟢' : '🔴';
