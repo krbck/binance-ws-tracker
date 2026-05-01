@@ -38,7 +38,7 @@ let ws = null;
 let reconnectTimer = null;
 let lastAlertAt = 0;
 let lastAlertDir = null;
-let activePosition = null;
+let activePositions = [];
 let symbolInfo = {};
 
 // ── Trade State (shared between n8n workflows) ───────────────────────────────
@@ -125,24 +125,24 @@ async function tgRequest(method, payload) {
     });
 }
 
-function getPositionText(currentPrice) {
-    if (!activePosition) return '';
+function getPositionText(position, currentPrice) {
+    if (!position) return '';
     const cp = currentPrice || lastPrice;
     if (!cp) return 'Waiting for price...';
 
-    const priceDiff = cp - activePosition.entryPrice;
-    const dirMult = activePosition.side === 'BUY' ? 1 : -1;
-    const rawPct = (priceDiff / activePosition.entryPrice) * 100 * dirMult;
-    const levPct = rawPct * activePosition.leverage;
-    const pnlUsdt = (levPct / 100) * activePosition.amount;
+    const priceDiff = cp - position.entryPrice;
+    const dirMult = position.side === 'BUY' ? 1 : -1;
+    const rawPct = (priceDiff / position.entryPrice) * 100 * dirMult;
+    const levPct = rawPct * position.leverage;
+    const pnlUsdt = (levPct / 100) * position.amount;
 
     const icon = pnlUsdt >= 0 ? '🟢' : '🔴';
     const sign = pnlUsdt >= 0 ? '+' : '';
 
-    return `📊 <b>Active ${activePosition.side} Position</b>
-🔹 Symbol: ${activePosition.symbol}
-🔹 Leverage: ${activePosition.leverage}x
-🔹 Entry: $${activePosition.entryPrice.toFixed(4)}
+    return `📊 <b>Active ${position.side} Position</b>
+🔹 Symbol: ${position.symbol}
+🔹 Leverage: ${position.leverage}x
+🔹 Entry: $${position.entryPrice.toFixed(4)}
 🔹 Current: $${cp.toFixed(4)}
 
 ${icon} <b>PnL: ${sign}${pnlUsdt.toFixed(2)} USDT (${sign}${levPct.toFixed(2)}%)</b>
@@ -151,31 +151,36 @@ ${icon} <b>PnL: ${sign}${pnlUsdt.toFixed(2)} USDT (${sign}${levPct.toFixed(2)}%)
 }
 
 setInterval(async () => {
-    if (activePosition && activePosition.messageId && activePosition.chatId && TELEGRAM_BOT_TOKEN) {
-        const text = getPositionText();
-        if (text !== activePosition.lastTgText) {
-            await tgRequest('editMessageText', {
-                chat_id: activePosition.chatId, message_id: activePosition.messageId,
-                text: text, parse_mode: 'HTML'
-            });
-            activePosition.lastTgText = text;
+    for (const pos of activePositions) {
+        if (pos && pos.messageId && pos.chatId && TELEGRAM_BOT_TOKEN) {
+            const text = getPositionText(pos);
+            if (text !== pos.lastTgText) {
+                await tgRequest('editMessageText', {
+                    chat_id: pos.chatId, message_id: pos.messageId,
+                    text: text, parse_mode: 'HTML'
+                });
+                pos.lastTgText = text;
+            }
         }
     }
 }, 10000);
 
 // ── Auto-clear position if closed on Binance ─────────────────────────────────
 setInterval(async () => {
-    if (!activePosition || !BINANCE_API_KEY || !BINANCE_API_SECRET) return;
+    if (activePositions.length === 0 || !BINANCE_API_KEY || !BINANCE_API_SECRET) return;
     try {
-        const positions = await binancePrivateRequest('GET', 'positionRisk', {
-            symbol: activePosition.symbol
+        const positions = await binancePrivateRequest('GET', 'positionRisk');
+        if (!Array.isArray(positions)) return;
+        
+        activePositions = activePositions.filter(pos => {
+            const binancePos = positions.find(p => p.symbol === pos.symbol);
+            const posAmt = binancePos ? parseFloat(binancePos.positionAmt) : 0;
+            if (posAmt === 0) {
+                console.log(`\n\x1b[33m[POSITION]\x1b[0m No open position on Binance for ${pos.symbol} — clearing tracker`);
+                return false;
+            }
+            return true;
         });
-        const pos = Array.isArray(positions) ? positions.find(p => p.symbol === activePosition.symbol) : null;
-        const posAmt = pos ? parseFloat(pos.positionAmt) : 0;
-        if (posAmt === 0) {
-            console.log(`\n\x1b[33m[POSITION]\x1b[0m No open position on Binance for ${activePosition.symbol} — clearing tracker`);
-            activePosition = null;
-        }
     } catch (e) {
         // Silently ignore — will retry next interval
     }
@@ -201,14 +206,24 @@ function printTick(price, qty, isBuyerMaker) {
     const cStr = `\x1b[90m#${tradeCount}\x1b[0m`;
 
     let pnlStr = '';
-    if (activePosition && activePosition.entryPrice) {
-        const priceDiff = price - activePosition.entryPrice;
-        const dirMult = activePosition.side === 'BUY' ? 1 : -1;
-        const rawPct = (priceDiff / activePosition.entryPrice) * 100 * dirMult;
-        const levPct = rawPct * activePosition.leverage;
-        const pnlUsdt = (levPct / 100) * activePosition.amount;
-        const color = pnlUsdt >= 0 ? '\x1b[32m' : '\x1b[31m';
-        pnlStr = ` | ${color}PnL: ${pnlUsdt > 0 ? '+' : ''}${pnlUsdt.toFixed(2)}$ (${levPct > 0 ? '+' : ''}${levPct.toFixed(2)}%)\x1b[0m`;
+    if (activePositions.length > 0) {
+        let totalPnlUsdt = 0;
+        let showPnl = false;
+        for (const pos of activePositions) {
+            if (pos.entryPrice) {
+                const priceDiff = price - pos.entryPrice;
+                const dirMult = pos.side === 'BUY' ? 1 : -1;
+                const rawPct = (priceDiff / pos.entryPrice) * 100 * dirMult;
+                const levPct = rawPct * pos.leverage;
+                const pnlUsdt = (levPct / 100) * pos.amount;
+                totalPnlUsdt += pnlUsdt;
+                showPnl = true;
+            }
+        }
+        if (showPnl) {
+            const color = totalPnlUsdt >= 0 ? '\x1b[32m' : '\x1b[31m';
+            pnlStr = ` | ${color}Total PnL: ${totalPnlUsdt > 0 ? '+' : ''}${totalPnlUsdt.toFixed(2)}$\x1b[0m`;
+        }
     }
 
     const logStr = `[${ts()}] ${SYMBOL.toUpperCase()}-PERP | ${side} | Price: ${pStr} | Qty: ${parseFloat(qty).toFixed(2)} | ${hStr} ${lStr} | ${cStr}${pnlStr}`;
@@ -483,17 +498,19 @@ const apiServer = http.createServer(async (req, res) => {
                     executionMsg = 'SUCCESSFULLY EXECUTED ON BINANCE';
                     executionColor = '\x1b[32m';
 
-                    activePosition = {
+                    const newPosition = {
                         symbol: tradeSymbol, side: tradeSide, entryPrice: tradePrice,
                         leverage: tradeLeverage, amount: tradeAmount, qty: finalQty,
                         chatId: cleanChatId, messageId: null, lastTgText: ''
                     };
+                    
+                    activePositions.push(newPosition);
 
                     if (TELEGRAM_BOT_TOKEN && cleanChatId) {
                         const tgRes = await tgRequest('sendMessage', {
-                            chat_id: cleanChatId, text: getPositionText(tradePrice), parse_mode: 'HTML'
+                            chat_id: cleanChatId, text: getPositionText(newPosition, tradePrice), parse_mode: 'HTML'
                         });
-                        if (tgRes && tgRes.ok) activePosition.messageId = tgRes.result.message_id;
+                        if (tgRes && tgRes.ok) newPosition.messageId = tgRes.result.message_id;
                     }
                 } catch (e) {
                     executionMsg = `EXECUTION FAILED: ${e.message}`;
