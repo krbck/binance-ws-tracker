@@ -39,6 +39,7 @@ let reconnectTimer = null;
 let lastAlertAt = 0;
 let lastAlertDir = null;
 let activePositions = [];
+const dashboards = {};
 let symbolInfo = {};
 
 // ── Trade State (shared between n8n workflows) ───────────────────────────────
@@ -125,42 +126,63 @@ async function tgRequest(method, payload) {
     });
 }
 
-function getPositionText(position, currentPrice) {
-    if (!position) return '';
+function getDashboardText(chatId, currentPrice) {
     const cp = currentPrice || lastPrice;
+    const chatPositions = activePositions.filter(p => p.chatId === chatId);
+    
+    if (chatPositions.length === 0) return 'No active positions.';
     if (!cp) return 'Waiting for price...';
 
-    const priceDiff = cp - position.entryPrice;
-    const dirMult = position.side === 'BUY' ? 1 : -1;
-    const rawPct = (priceDiff / position.entryPrice) * 100 * dirMult;
-    const levPct = rawPct * position.leverage;
-    const pnlUsdt = (levPct / 100) * position.amount;
+    let text = `📊 <b>Active Positions Dashboard</b>\n\n`;
+    let totalPnl = 0;
+    
+    chatPositions.forEach((pos, index) => {
+        const priceDiff = cp - pos.entryPrice;
+        const dirMult = pos.side === 'BUY' ? 1 : -1;
+        const rawPct = (priceDiff / pos.entryPrice) * 100 * dirMult;
+        const levPct = rawPct * pos.leverage;
+        const pnlUsdt = (levPct / 100) * pos.amount;
+        totalPnl += pnlUsdt;
 
-    const icon = pnlUsdt >= 0 ? '🟢' : '🔴';
-    const sign = pnlUsdt >= 0 ? '+' : '';
+        const icon = pnlUsdt >= 0 ? '🟢' : '🔴';
+        const sign = pnlUsdt >= 0 ? '+' : '';
 
-    return `📊 <b>Active ${position.side} Position</b>
-🔹 Symbol: ${position.symbol}
-🔹 Leverage: ${position.leverage}x
-🔹 Entry: $${position.entryPrice.toFixed(4)}
-🔹 Current: $${cp.toFixed(4)}
-
-${icon} <b>PnL: ${sign}${pnlUsdt.toFixed(2)} USDT (${sign}${levPct.toFixed(2)}%)</b>
-
-<i>Last updated at ${new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' })}</i>`;
+        text += `<b>${index + 1}. ${pos.side} ${pos.symbol}</b> | ${pos.leverage}x
+🔹 Entry: $${pos.entryPrice.toFixed(4)} | Cur: $${cp.toFixed(4)}
+${icon} PnL: ${sign}${pnlUsdt.toFixed(2)} USDT (${sign}${levPct.toFixed(2)}%)\n\n`;
+    });
+    
+    const totalIcon = totalPnl >= 0 ? '🟢' : '🔴';
+    const totalSign = totalPnl >= 0 ? '+' : '';
+    text += `───────────────\n${totalIcon} <b>Total PnL: ${totalSign}${totalPnl.toFixed(2)} USDT</b>\n\n`;
+    text += `<i>Last updated at ${new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' })}</i>`;
+    
+    return text;
 }
 
 setInterval(async () => {
-    for (const pos of activePositions) {
-        if (pos && pos.messageId && pos.chatId && TELEGRAM_BOT_TOKEN) {
-            const text = getPositionText(pos);
-            if (text !== pos.lastTgText) {
+    if (!TELEGRAM_BOT_TOKEN) return;
+    const chatIds = [...new Set(activePositions.map(p => p.chatId).filter(Boolean))];
+    
+    for (const chatId of chatIds) {
+        const text = getDashboardText(chatId);
+        if (dashboards[chatId] && dashboards[chatId].messageId) {
+            if (dashboards[chatId].lastTgText !== text) {
                 await tgRequest('editMessageText', {
-                    chat_id: pos.chatId, message_id: pos.messageId,
+                    chat_id: chatId, message_id: dashboards[chatId].messageId,
                     text: text, parse_mode: 'HTML'
                 });
-                pos.lastTgText = text;
+                dashboards[chatId].lastTgText = text;
             }
+        }
+    }
+    
+    for (const chatId in dashboards) {
+        if (!chatIds.includes(chatId)) {
+            if (dashboards[chatId].messageId) {
+                await tgRequest('deleteMessage', { chat_id: chatId, message_id: dashboards[chatId].messageId });
+            }
+            delete dashboards[chatId];
         }
     }
 }, 10000);
@@ -501,16 +523,23 @@ const apiServer = http.createServer(async (req, res) => {
                     const newPosition = {
                         symbol: tradeSymbol, side: tradeSide, entryPrice: tradePrice,
                         leverage: tradeLeverage, amount: tradeAmount, qty: finalQty,
-                        chatId: cleanChatId, messageId: null, lastTgText: ''
+                        chatId: cleanChatId
                     };
                     
                     activePositions.push(newPosition);
 
                     if (TELEGRAM_BOT_TOKEN && cleanChatId) {
+                        if (dashboards[cleanChatId] && dashboards[cleanChatId].messageId) {
+                            await tgRequest('deleteMessage', { chat_id: cleanChatId, message_id: dashboards[cleanChatId].messageId });
+                        }
+                        const text = getDashboardText(cleanChatId, tradePrice);
                         const tgRes = await tgRequest('sendMessage', {
-                            chat_id: cleanChatId, text: getPositionText(newPosition, tradePrice), parse_mode: 'HTML'
+                            chat_id: cleanChatId, text: text, parse_mode: 'HTML'
                         });
-                        if (tgRes && tgRes.ok) newPosition.messageId = tgRes.result.message_id;
+                        if (tgRes && tgRes.ok) {
+                            dashboards[cleanChatId] = { messageId: tgRes.result.message_id, lastTgText: text };
+                            await tgRequest('pinChatMessage', { chat_id: cleanChatId, message_id: tgRes.result.message_id, disable_notification: true });
+                        }
                     }
                 } catch (e) {
                     executionMsg = `EXECUTION FAILED: ${e.message}`;
