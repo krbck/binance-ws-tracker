@@ -130,7 +130,9 @@ function getDashboardText(chatId, currentPrice) {
     const cp = currentPrice || lastPrice;
     const chatPositions = activePositions.filter(p => p.chatId === chatId);
     
-    if (chatPositions.length === 0) return 'No active positions.';
+    if (chatPositions.length === 0) {
+        return `📊 <b>Active Positions Dashboard</b>\n\nNo active positions.\n\n<i>Last updated at ${new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' })}</i>`;
+    }
     if (!cp) return 'Waiting for price...';
 
     let text = `📊 <b>Active Positions Dashboard</b>\n`;
@@ -163,27 +165,22 @@ function getDashboardText(chatId, currentPrice) {
 
 setInterval(async () => {
     if (!TELEGRAM_BOT_TOKEN) return;
-    const chatIds = [...new Set(activePositions.map(p => p.chatId).filter(Boolean))];
     
-    for (const chatId of chatIds) {
+    // Iterate over ALL known dashboards
+    for (const chatId in dashboards) {
         const text = getDashboardText(chatId);
         if (dashboards[chatId] && dashboards[chatId].messageId) {
             if (dashboards[chatId].lastTgText !== text) {
-                await tgRequest('editMessageText', {
-                    chat_id: chatId, message_id: dashboards[chatId].messageId,
-                    text: text, parse_mode: 'HTML'
-                });
-                dashboards[chatId].lastTgText = text;
+                try {
+                    await tgRequest('editMessageText', {
+                        chat_id: chatId, message_id: dashboards[chatId].messageId,
+                        text: text, parse_mode: 'HTML'
+                    });
+                    dashboards[chatId].lastTgText = text;
+                } catch (e) {
+                    console.error(`\n\x1b[31m[TELEGRAM ERR]\x1b[0m Failed to update dashboard: ${e.message}`);
+                }
             }
-        }
-    }
-    
-    for (const chatId in dashboards) {
-        if (!chatIds.includes(chatId)) {
-            if (dashboards[chatId].messageId) {
-                await tgRequest('deleteMessage', { chat_id: chatId, message_id: dashboards[chatId].messageId });
-            }
-            delete dashboards[chatId];
         }
     }
 }, 10000);
@@ -192,20 +189,33 @@ setInterval(async () => {
 setInterval(async () => {
     if (activePositions.length === 0 || !BINANCE_API_KEY || !BINANCE_API_SECRET) return;
     try {
-        const positions = await binancePrivateRequest('GET', 'positionRisk');
+        // Use v2 to support Hedge mode (positionSide) and standard positionRisk response
+        const positions = await binancePrivateRequest('GET', 'v2/positionRisk');
         if (!Array.isArray(positions)) return;
         
         activePositions = activePositions.filter(pos => {
-            const binancePos = positions.find(p => p.symbol === pos.symbol);
-            const posAmt = binancePos ? parseFloat(binancePos.positionAmt) : 0;
-            if (posAmt === 0) {
-                console.log(`\n\x1b[33m[POSITION]\x1b[0m No open position on Binance for ${pos.symbol} — clearing tracker`);
+            const binancePosList = positions.filter(p => p.symbol === pos.symbol);
+            
+            let totalAmt = 0;
+            for (const p of binancePosList) {
+                // positionSide is 'BOTH' for One-way mode, 'LONG' or 'SHORT' for Hedge mode
+                if (p.positionSide === 'BOTH') {
+                    totalAmt += Math.abs(parseFloat(p.positionAmt || 0));
+                } else if (p.positionSide === 'LONG' && pos.side === 'BUY') {
+                    totalAmt += Math.abs(parseFloat(p.positionAmt || 0));
+                } else if (p.positionSide === 'SHORT' && pos.side === 'SELL') {
+                    totalAmt += Math.abs(parseFloat(p.positionAmt || 0));
+                }
+            }
+
+            if (totalAmt === 0) {
+                console.log(`\n\x1b[33m[POSITION]\x1b[0m No open position on Binance for ${pos.symbol} (${pos.side}) — clearing tracker`);
                 return false;
             }
             return true;
         });
     } catch (e) {
-        // Silently ignore — will retry next interval
+        console.error(`\n\x1b[31m[BINANCE ERR]\x1b[0m positionRisk check failed: ${e.message}`);
     }
 }, 10000);
 
