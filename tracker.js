@@ -55,8 +55,9 @@ async function binancePrivateRequest(method, endpoint, params = {}) {
     const fullQuery = `${query}&signature=${signature}`;
 
     return new Promise((resolve, reject) => {
+        const reqPath = endpoint.startsWith('v2/') ? `/fapi/${endpoint}?${fullQuery}` : `/fapi/v1/${endpoint}?${fullQuery}`;
         const options = {
-            hostname: 'fapi.binance.com', port: 443, path: `/fapi/v1/${endpoint}?${fullQuery}`,
+            hostname: 'fapi.binance.com', port: 443, path: reqPath,
             method: method,
             headers: { 'X-MBX-APIKEY': BINANCE_API_KEY, 'Content-Type': 'application/x-www-form-urlencoded' }
         };
