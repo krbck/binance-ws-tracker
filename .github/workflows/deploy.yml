@@ -44,7 +44,7 @@ jobs:
 
       - name: Update Image Tag
         run: |
-          cd gitops-config/apps/binance-ws-tracker
+          cd gitops-config/applications/binance-ws-tracker
           sed -i "s/tag:.*/tag: \"${{ steps.tag.outputs.tag }}\"/" values.yaml
 
 
