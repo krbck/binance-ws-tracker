@@ -29,10 +29,24 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
 
-      - name: Build and Push
+      - name: Build Image
         run: |
           IMAGE=ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }}
           docker build -t $IMAGE .
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: 'ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Push Image
+        run: |
+          IMAGE=ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }}
           docker push $IMAGE
 
       - name: Checkout GitOps Repo
