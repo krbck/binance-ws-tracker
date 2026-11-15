@@ -1,0 +1,71 @@
+name: Dependabot auto-merge
+
+# Merges Dependabot npm patch/minor PRs (incl. security updates) and then dispatches
+# deploy.yml, because a merge made with GITHUB_TOKEN does not fire the push trigger.
+# npm majors are left open with a comment for manual review. GitHub Actions PRs are never
+# auto-merged: the merge step is skipped (the run stays green) and one comment is posted
+# when the PR is opened.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write       # merge the PR
+  pull-requests: write  # merge + comment
+  actions: write        # gh workflow run deploy.yml
+
+# One merge+dispatch at a time per repo; queued runs are not cancelled.
+concurrency:
+  group: dependabot-automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  automerge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      - name: Merge npm patch/minor and trigger deploy
+        if: >-
+          steps.meta.outputs.package-ecosystem == 'npm_and_yarn' &&
+          (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+           steps.meta.outputs.update-type == 'version-update:semver-minor')
+        run: |
+          # mergeability may still be computing right after open/rebase -> retry
+          for i in 1 2 3 4 5; do
+            gh pr merge "$PR_URL" --squash --delete-branch || true
+            if [ "$(gh pr view "$PR_URL" --json state -q .state)" = "MERGED" ]; then
+              gh workflow run deploy.yml --ref main
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::could not merge $PR_URL"
+          exit 1
+
+      - name: Comment on major update
+        if: >-
+          steps.meta.outputs.package-ecosystem == 'npm_and_yarn' &&
+          steps.meta.outputs.update-type == 'version-update:semver-major' &&
+          github.event.action == 'opened'
+        env:
+          DEPS: ${{ steps.meta.outputs.dependency-names }}
+        run: |
+          gh pr comment "$PR_URL" --body "Major update ($DEPS): not auto-merged. Review the breaking changes and merge manually; a merge by you triggers deploy.yml via push."
+
+      - name: Comment on GitHub Actions update
+        if: >-
+          steps.meta.outputs.package-ecosystem == 'github_actions' &&
+          github.event.action == 'opened'
+        env:
+          DEPS: ${{ steps.meta.outputs.dependency-names }}
+        run: |
+          gh pr comment "$PR_URL" --body "GitHub Actions update ($DEPS): not auto-merged (only npm patch/minor is). Review and merge manually; a merge by you triggers deploy.yml via push."

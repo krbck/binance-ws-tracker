@@ -1,0 +1,35 @@
+# Dependabot: weekly npm + GitHub Actions updates.
+# minor+patch are grouped into ONE PR and auto-merged by
+# .github/workflows/dependabot-automerge.yml; majors stay as separate PRs for review.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Istanbul"
+    open-pull-requests-limit: 3
+    # Wait a few days before proposing a fresh release (supply-chain safety).
+    # Does not delay security updates.
+    cooldown:
+      default-days: 3
+    groups:
+      npm-minor-patch:
+        update-types: ["minor", "patch"]
+      npm-security:
+        applies-to: security-updates
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Istanbul"
+    open-pull-requests-limit: 2
+    groups:
+      actions:
+        patterns: ["*"]

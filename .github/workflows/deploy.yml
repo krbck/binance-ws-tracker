@@ -3,6 +3,7 @@ name: Build and Update GitOps
 on:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   sast:
@@ -22,6 +23,10 @@ jobs:
   build:
     needs: sast
     runs-on: ubuntu-latest
+
+    concurrency:
+      group: gitops-config
+      cancel-in-progress: false
 
     permissions:
       contents: write
@@ -48,6 +53,31 @@ jobs:
         run: |
           IMAGE=ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }}
           docker build -t $IMAGE .
+
+      - name: Smoke Test
+        run: |
+          # websocket client + small HTTP API: must still run after 15s with no crash in the logs,
+          # then GET /state/<id> must be 2xx (/health is 503 until Binance answers, so it is not used).
+          # Runs the image just built; on failure prints its logs. The container is always removed.
+          IMAGE=ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }}
+          NAME=smoke-${{ github.run_id }}
+          URL=http://127.0.0.1:18080/state/smoke-test
+          trap 'docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
+          fail() { echo "::error::smoke test failed: $1"; docker logs "$NAME" 2>&1 | tail -n 200 || true; exit 1; }
+          docker run -d --name "$NAME" -p 127.0.0.1:18080:3000 "$IMAGE"
+          deadline=$((SECONDS + 60))
+          sleep 15
+          [ "$(docker inspect -f '{{.State.Running}}' "$NAME")" = "true" ] || fail "container not running after 15s"
+          logs=$(docker logs "$NAME" 2>&1 || true)
+          if grep -qE 'UnhandledPromiseRejection|Uncaught|node:internal|^[[:space:]]+at .+:[0-9]+:[0-9]+\)?$' <<<"$logs"; then
+            fail "crash/stack trace in the logs"
+          fi
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            [ "$(docker inspect -f '{{.State.Running}}' "$NAME")" = "true" ] || fail "container exited"
+            if curl -fsS -o /dev/null --max-time 3 "$URL"; then echo "smoke test passed: $URL"; exit 0; fi
+            sleep 2
+          done
+          fail "no 2xx from $URL within 60s"
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@v0.36.0
@@ -82,6 +112,15 @@ jobs:
           cd gitops-config
           git config user.name "ci-bot"
           git config user.email "ci@local"
-          git add .
+          git add applications/binance-ws-tracker/values.yaml
+          git diff --cached --quiet && { echo "applications/binance-ws-tracker/values.yaml unchanged, nothing to commit"; exit 0; }
           git commit -m "update image tag"
+          # Other repos push to gitops-config too (the concurrency group is per repo): on a
+          # rejected push rebase onto the remote and retry, at most 3 times.
+          for attempt in 1 2 3; do
+            git push && exit 0
+            echo "push rejected (retry $attempt/3), rebasing onto the remote"
+            sleep $((attempt * 5))
+            git pull --rebase
+          done
           git push
