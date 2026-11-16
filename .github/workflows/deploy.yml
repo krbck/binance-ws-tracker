@@ -13,7 +13,7 @@ jobs:
       image: semgrep/semgrep
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Run Semgrep
         run: semgrep ci
@@ -33,10 +33,10 @@ jobs:
       packages: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -95,7 +95,7 @@ jobs:
           docker push $IMAGE
 
       - name: Checkout GitOps Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: krbck/gitops-config
           token: ${{ secrets.GITOPS_TOKEN }}
